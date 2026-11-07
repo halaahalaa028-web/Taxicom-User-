@@ -184,7 +184,7 @@ workflows:
       - name: Prepare Flutter iOS build
         script: flutter build ios --release --no-codesign
       - name: Apply iOS code signing
-        script: xcode-project use-profiles
+        script: xcode-project use-profiles --project ios/Runner.xcodeproj
       - name: Build signed iOS IPA
         script: xcode-project build-ipa --workspace "$CM_BUILD_DIR/ios/Runner.xcworkspace" --scheme "Runner"
     artifacts:
