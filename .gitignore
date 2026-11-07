@@ -1,0 +1,21 @@
+# Android signing files
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+
+# iOS generated files
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+**/service-account.json
+**/*serviceAccount*.json
+# Ignore backups and screenshots
+*.bak
+screenshots/

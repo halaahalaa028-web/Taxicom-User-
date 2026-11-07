@@ -1,0 +1,160 @@
+workflows:
+  generate-ipad-screenshots:
+    name: Generate iPad & iPhone App Store Screenshots
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        BUNDLE_ID: "com.Taxicom.TaxicomUser"
+    scripts:
+      - name: Configure Flutter & CocoaPods
+        script: |
+          echo "http1.1" >> ~/.curlrc
+          echo "retry = 5" >> ~/.curlrc
+          echo "retry-delay = 3" >> ~/.curlrc
+          flutter config --no-enable-swift-package-manager
+          flutter pub get
+          flutter build ios --simulator --config-only --no-codesign || (sleep 5 && flutter build ios --simulator --config-only --no-codesign)
+
+      - name: Build Simulator App
+        script: |
+          flutter build ios --simulator --debug --no-codesign
+          cp -r build/ios/iphonesimulator/Runner.app /tmp/Runner.app
+
+      - name: Boot iPad & iPhone Simulators and Capture All Screenshots
+        script: |
+          mkdir -p $CM_BUILD_DIR/screenshots
+          BUNDLE_ID="com.Taxicom.TaxicomUser"
+
+          echo "=================================================="
+          echo "📱 STEP 1: CAPTURING IPAD 12.9\" / 13\" SCREENSHOTS"
+          echo "=================================================="
+          IPAD_UDID=$(xcrun simctl list devices 'iPad' | grep -v 'unavailable' | grep -E 'iPad Pro.*(13-inch|12.9-inch)|iPad Pro|iPad' | head -n 1 | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}' || true)
+          if [ -z "$IPAD_UDID" ]; then
+            IPAD_UDID=$(xcrun simctl create "iPad Pro 13-inch" "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4" "com.apple.CoreSimulator.SimRuntime.iOS-17-5" || true)
+          fi
+
+          if [ -n "$IPAD_UDID" ]; then
+            echo "Booting iPad Simulator ($IPAD_UDID)..."
+            xcrun simctl boot $IPAD_UDID || true
+            xcrun simctl bootstatus $IPAD_UDID -b || sleep 15
+
+            xcrun simctl uninstall $IPAD_UDID $BUNDLE_ID || true
+            xcrun simctl install $IPAD_UDID /tmp/Runner.app
+            xcrun simctl privacy $IPAD_UDID grant all $BUNDLE_ID || true
+            xcrun simctl privacy $IPAD_UDID grant notifications $BUNDLE_ID || true
+
+            CONTAINER=$(xcrun simctl get_app_container $IPAD_UDID $BUNDLE_ID data || true)
+            if [ -n "$CONTAINER" ]; then
+              mkdir -p "$CONTAINER/Documents"
+            fi
+
+            # Screen 1: Home
+            if [ -n "$CONTAINER" ]; then echo "/" > "$CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPAD_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/ $IPAD_UDID $BUNDLE_ID
+            echo "Waiting 12s for Home UI to render..."
+            sleep 12
+            xcrun simctl io $IPAD_UDID screenshot $CM_BUILD_DIR/screenshots/ipad_12_9inch_01_home.png
+
+            # Screen 2: Categories / Trips
+            if [ -n "$CONTAINER" ]; then echo "/categories" > "$CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPAD_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/categories $IPAD_UDID $BUNDLE_ID
+            echo "Waiting 12s for Categories UI to render..."
+            sleep 12
+            xcrun simctl io $IPAD_UDID screenshot $CM_BUILD_DIR/screenshots/ipad_12_9inch_02_categories.png
+
+            # Screen 3: Cart / Wallet
+            if [ -n "$CONTAINER" ]; then echo "/cart" > "$CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPAD_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/cart $IPAD_UDID $BUNDLE_ID
+            echo "Waiting 12s for Cart UI to render..."
+            sleep 12
+            xcrun simctl io $IPAD_UDID screenshot $CM_BUILD_DIR/screenshots/ipad_12_9inch_03_cart.png
+
+            # Screen 4: Profile
+            if [ -n "$CONTAINER" ]; then echo "/profile" > "$CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPAD_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/profile $IPAD_UDID $BUNDLE_ID
+            echo "Waiting 12s for Profile UI to render..."
+            sleep 12
+            xcrun simctl io $IPAD_UDID screenshot $CM_BUILD_DIR/screenshots/ipad_12_9inch_04_profile.png
+            echo "✅ Successfully captured 4 iPad screenshots!"
+
+            echo "Shutting down iPad Simulator to prepare for iPhone..."
+            xcrun simctl shutdown $IPAD_UDID || true
+            sleep 3
+          fi
+
+          echo "=================================================="
+          echo "📱 STEP 2: CAPTURING IPHONE 6.7\" SCREENSHOTS"
+          echo "=================================================="
+          IPHONE_UDID=$(xcrun simctl list devices | grep -v 'unavailable' | grep -E 'iPhone 16 Pro Max|iPhone 15 Pro Max|iPhone 14 Pro Max|iPhone 16 Plus|iPhone 15 Plus' | head -n 1 | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}' || true)
+          if [ -z "$IPHONE_UDID" ]; then
+            echo "Searching for iOS runtime to create iPhone 6.7\" simulator..."
+            RUNTIME=$(xcrun simctl list runtimes | grep -i 'iOS' | head -n 1 | grep -oE 'com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+' || true)
+            if [ -n "$RUNTIME" ]; then
+              IPHONE_UDID=$(xcrun simctl create "iPhone 16 Pro Max" "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro-Max" "$RUNTIME" 2>/dev/null || xcrun simctl create "iPhone 15 Pro Max" "com.apple.CoreSimulator.SimDeviceType.iPhone-15-Pro-Max" "$RUNTIME" 2>/dev/null || true)
+            fi
+          fi
+          if [ -z "$IPHONE_UDID" ]; then
+            echo "Fallback to any available iPhone simulator..."
+            IPHONE_UDID=$(xcrun simctl list devices | grep -v 'unavailable' | grep -i 'iPhone' | head -n 1 | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}' || true)
+          fi
+
+          if [ -n "$IPHONE_UDID" ]; then
+            echo "Booting iPhone Simulator ($IPHONE_UDID)..."
+            xcrun simctl boot $IPHONE_UDID || true
+            xcrun simctl bootstatus $IPHONE_UDID -b || sleep 12
+
+            xcrun simctl uninstall $IPHONE_UDID $BUNDLE_ID || true
+            xcrun simctl install $IPHONE_UDID /tmp/Runner.app
+            xcrun simctl privacy $IPHONE_UDID grant all $BUNDLE_ID || true
+            xcrun simctl privacy $IPHONE_UDID grant notifications $BUNDLE_ID || true
+
+            IPHONE_CONTAINER=$(xcrun simctl get_app_container $IPHONE_UDID $BUNDLE_ID data || true)
+            if [ -n "$IPHONE_CONTAINER" ]; then
+              mkdir -p "$IPHONE_CONTAINER/Documents"
+            fi
+
+            # Screen 1: Home
+            if [ -n "$IPHONE_CONTAINER" ]; then echo "/" > "$IPHONE_CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPHONE_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/ $IPHONE_UDID $BUNDLE_ID
+            echo "Waiting 12s for iPhone Home UI to render..."
+            sleep 12
+            xcrun simctl io $IPHONE_UDID screenshot $CM_BUILD_DIR/screenshots/iphone_6_7inch_01_home.png
+
+            # Screen 2: Categories / Trips
+            if [ -n "$IPHONE_CONTAINER" ]; then echo "/categories" > "$IPHONE_CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPHONE_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/categories $IPHONE_UDID $BUNDLE_ID
+            echo "Waiting 12s for iPhone Categories UI to render..."
+            sleep 12
+            xcrun simctl io $IPHONE_UDID screenshot $CM_BUILD_DIR/screenshots/iphone_6_7inch_02_categories.png
+
+            # Screen 3: Cart / Wallet
+            if [ -n "$IPHONE_CONTAINER" ]; then echo "/cart" > "$IPHONE_CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPHONE_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/cart $IPHONE_UDID $BUNDLE_ID
+            echo "Waiting 12s for iPhone Cart UI to render..."
+            sleep 12
+            xcrun simctl io $IPHONE_UDID screenshot $CM_BUILD_DIR/screenshots/iphone_6_7inch_03_cart.png
+
+            # Screen 4: Profile
+            if [ -n "$IPHONE_CONTAINER" ]; then echo "/profile" > "$IPHONE_CONTAINER/Documents/initial_route.txt"; fi
+            xcrun simctl terminate $IPHONE_UDID $BUNDLE_ID || true
+            xcrun simctl launch --env INITIAL_ROUTE=/profile $IPHONE_UDID $BUNDLE_ID
+            echo "Waiting 12s for iPhone Profile UI to render..."
+            sleep 12
+            xcrun simctl io $IPHONE_UDID screenshot $CM_BUILD_DIR/screenshots/iphone_6_7inch_04_profile.png
+            echo "✅ Successfully captured 4 iPhone screenshots!"
+
+            xcrun simctl shutdown $IPHONE_UDID || true
+          fi
+    artifacts:
+      - screenshots/*.png

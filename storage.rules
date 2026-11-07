@@ -1,0 +1,62 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ============================================================
+    // دوال مساعدة (Helper Functions)
+    // ============================================================
+
+    // التحقق من أن المستخدم مسجل دخول
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // التحقق من نوع الملف (صورة فقط)
+    function isImageType() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // التحقق من حجم الملف (الحد الأقصى 5 ميجابايت)
+    function isUnderMaxSize() {
+      return request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // ============================================================
+    // 1. صور الملفات الشخصية (profile_photos)
+    //    المسار: profile_photos/{userId}.jpg
+    //    الاستخدام:
+    //    - السائق يرفع صورته عند التسجيل
+    //    - الراكب يرى صورة السائق في الرحلة
+    //    - السائق يرى صورته عند عرض بياناته
+    // ============================================================
+    match /profile_photos/{fileName} {
+
+      // القراءة:
+      // - أي مستخدم مسجل يمكنه قراءة صور الملفات الشخصية
+      //   (الراكب يحتاج رؤية صورة السائق أثناء الرحلة)
+      allow read: if isAuthenticated();
+
+      // الرفع والتحديث:
+      // - فقط صاحب الصورة يمكنه رفعها أو تحديثها
+      // - اسم الملف يجب أن يبدأ بـ userId (مثل: {userId}.jpg)
+      // - يجب أن يكون الملف من نوع صورة
+      // - يجب أن لا يتجاوز الحجم 5 ميجابايت
+      allow create, update: if isAuthenticated()
+        && fileName.matches(request.auth.uid + '[.].*')
+        && isImageType()
+        && isUnderMaxSize();
+
+      // الحذف:
+      // - فقط صاحب الصورة يمكنه حذفها
+      allow delete: if isAuthenticated()
+        && fileName.matches(request.auth.uid + '[.].*');
+    }
+
+    // ============================================================
+    // 2. منع الوصول لأي مسار آخر
+    // ============================================================
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

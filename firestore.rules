@@ -1,0 +1,395 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // ✅ المدير - صلاحيات كاملة بالاعتماد على رتبة المستخدم في قاعدة البيانات
+    function isAdmin() {
+      return request.auth != null && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'admin')
+      );
+    }
+    
+    // التحقق من أن السائق معتمد (approved)
+    function isApprovedDriver() {
+      let userData = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return isAuthenticated()
+        && (userData.userType == 'driver' || userData.userType == 'bike_driver')
+        && userData.driverStatus == 'approved';
+    }
+    
+    // التحقق من أن سائق الدراجة معتمد (approved)
+    function isApprovedBikeDriver() {
+      let userData = get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+      return isAuthenticated()
+        && userData.userType == 'bike_driver'
+        && userData.driverStatus == 'approved';
+    }
+    
+    // التحقق من كون المستخدم طرفاً في الرحلة (الراكب أو السائق)
+    function isTripParticipant(tripData) {
+      return isAuthenticated() && (
+        ('passengerId' in tripData && request.auth.uid == tripData.passengerId) || 
+        ('driverId' in tripData && request.auth.uid == tripData.driverId)
+      );
+    }
+
+    // لا تعتمد الهدايا الخاصة على أرقام الهاتف؛ الـ UID هو الهوية الموثوقة.
+    function isCouponRecipient(couponData) {
+      return couponData.isTargeted == false ||
+        (couponData.isTargeted == true && request.auth.uid in couponData.assignedUserIds);
+    }
+    
+    match /users/{userId} {
+      
+      // القراءة: صاحب الحساب، أو للجميع إذا كان سائقاً أو سائق دراجة، أو للسائق/سائق الدراجة المعتمد إذا كان العميل
+      allow read: if isAuthenticated() && (
+        isOwner(userId) ||
+        resource.data.userType == 'driver' ||
+        resource.data.userType == 'bike_driver' ||
+        (isApprovedDriver() && resource.data.userType == 'customer') ||
+        (isApprovedBikeDriver() && resource.data.userType == 'customer') ||
+        isAdmin()
+      );
+      
+      // الإنشاء: قواعد صارمة حسب نوع المستخدم
+      allow create: if isOwner(userId) && (
+        // === راكب (Customer) ===
+        // يجب: phone, province, name, userType
+        (request.resource.data.userType == 'customer'
+          && request.resource.data.keys().hasAll(['phone', 'province', 'name', 'userType'])
+          && request.resource.data.phone is string
+          && request.resource.data.phone.size() > 0
+          && request.resource.data.province is string
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0)
+        ||
+        // === سائق (Driver) ===
+        // الحسابات الذاتية للسائقين تبدأ دائماً pending ولا يمكن اعتمادها من العميل
+        (request.resource.data.userType == 'driver'
+          && request.resource.data.keys().hasAll(['phone', 'province', 'name', 'userType', 'driverStatus'])
+          && request.resource.data.phone is string
+          && request.resource.data.phone.size() > 0
+          && request.resource.data.province is string
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.driverStatus == 'pending')
+        ||
+        // === سائق دراجة (Bike Driver) ===
+        // الحسابات الذاتية لسائقي الدراجات تبدأ دائماً pending
+        (request.resource.data.userType == 'bike_driver'
+          && request.resource.data.keys().hasAll(['phone', 'province', 'name', 'userType', 'driverStatus'])
+          && request.resource.data.phone is string
+          && request.resource.data.phone.size() > 0
+          && request.resource.data.province is string
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.driverStatus == 'pending')
+      );
+      
+      // التحديث: الحقول المسموح بتغييرها (حماية قصوى: يُمنع تعديل userType أو ترقية الحساب لأدمن)
+      allow update: if (isOwner(userId) && resource.data.userType != 'admin'
+        // يجب أن تكون التغييرات فقط في الحقول الشخصية المسموحة (userType محظور تعديله)
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['province', 'address', 'gender', 'updatedAt', 'fcmToken', 'isOnline', 'currentDeviceId', 'externalTransport',
+                      'name', 'email', 'birthDate', 'profilePhotoUrl', 'carNumber', 'carType', 'carModel', 'carColor', 'driverStatus'])
+        // التحقق من المحافظة إذا تم تغييرها
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['province'])
+            || request.resource.data.province is string)
+        // التحقق من العنوان إذا تم تغييره
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['address'])
+            || request.resource.data.address is string)
+        // التحقق من الجنس إذا تم تغييره
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['gender'])
+            || request.resource.data.gender in ['male', 'female'])
+        // لا يمكن للمستخدم الموافقة على حسابه بنفسه
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['driverStatus'])
+            || request.resource.data.driverStatus == 'pending'))
+        || isAdmin();
+      
+      // الحذف: المستخدم يمكنه حذف حسابه العادي فقط، وحسابات الإدارة محمية
+      allow delete: if (isOwner(userId) && resource.data.userType != 'admin') || isAdmin();
+
+      // المجموعة الفرعية للكوبونات المستخدمة (used_coupons)
+      match /used_coupons/{couponId} {
+        // يكتب محرك التسوية الخادمي سجل الاستهلاك الذري فقط.
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+
+      // المجموعة الفرعية للبطاقات المحفوظة (saved_cards)
+      match /saved_cards/{cardId} {
+        // Cloud Functions/Admin SDK only writes verified Stripe card metadata.
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if false;
+      }
+    }
+    
+    match /trips/{tripId} {
+      // القراءة: حصراً لطرفي الرحلة، أو السائق المعتمد للرحلات المعلقة أو الملغاة لمعرفة الحالة، أو المسؤول
+      allow read: if isAuthenticated() && (
+        isTripParticipant(resource.data) ||
+        (resource.data.status in ['pending', 'cancelled', 'cancelledByPassenger', 'cancelledByDriver'] && isApprovedDriver()) ||
+        isAdmin()
+      );
+      
+      // الإنشاء: لا يملك العميل إلا طلباً معلّقاً بلا سائق أو حالة تدقيق/تسوية خادمية.
+      allow create: if isAuthenticated()
+        && request.resource.data.passengerId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && (!('driverId' in request.resource.data) || request.resource.data.driverId == null)
+        && (!('isPaid' in request.resource.data) || request.resource.data.isPaid == false)
+        && !request.resource.data.keys().hasAny([
+          'driverEarnings', 'platformCommission', 'commissionRate',
+          'commissionDeducted', 'paidAt', 'paymentStatus',
+          'paymentHoldStatus', 'paymentIntentId', 'heldAmount',
+          'heldStripeAmount', 'heldStripeCurrency',
+          'fallbackToCashReason', 'fallbackToCashMessage',
+          'priceAuditStatus', 'serverCalculatedPrice', 'calculatedDistance',
+          'priceAuditedAt', 'isPriceAdjustedByServer'
+        ]);
+      
+      // التحديث: حظر تعديل الحقول المالية وحصر التسوية بالخادم (Firebase Admin SDK)
+      allow update: if isAuthenticated()
+        // الحقول المالية المحظور تعديلها نهائياً من جهة العميل
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'driverEarnings', 'platformCommission', 'commissionRate',
+          'commissionDeducted', 'isPaid', 'paidAt', 'paymentStatus',
+          'paymentHoldStatus', 'paymentIntentId', 'paymentMethod',
+          'paymentMethodId', 'currency', 'heldAmount', 'heldStripeAmount',
+          'heldStripeCurrency', 'fallbackToCashReason', 'fallbackToCashMessage'
+        ])
+        && (
+          // قبول السائق لا يتم إلا بعد اعتماد السعر من Cloud Function.
+          (resource.data.status == 'pending'
+            && resource.data.priceAuditStatus in ['verified', 'adjusted']
+            && request.resource.data.status == 'accepted'
+            && isApprovedDriver()
+            && request.resource.data.driverId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'driverId', 'driverName', 'driverPhone',
+              'driverPhotoUrl', 'carNumber', 'carModel', 'carColor',
+              'carType', 'updatedAt'
+            ])) ||
+          // انتقالات السائق التشغيلية المحددة فقط.
+          (resource.data.driverId == request.auth.uid
+            && isApprovedDriver()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'pickedUpAt', 'completedAt', 'updatedAt'
+            ])
+            && ((resource.data.status == 'accepted' && request.resource.data.status == 'arrivedAtPickup')
+              || (resource.data.status == 'arrivedAtPickup' && request.resource.data.status == 'pickedUp')
+              || (resource.data.status == 'pickedUp' && request.resource.data.status == 'completed'))) ||
+          // إلغاء السائق قبل اكتمال الرحلة مع حقول إلغاء محددة.
+          (resource.data.driverId == request.auth.uid
+            && isApprovedDriver()
+            && resource.data.status in ['accepted', 'arrivedAtPickup', 'pickedUp']
+            && request.resource.data.status == 'cancelledByDriver'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'driverCancellationReason', 'cancelledByDriverAt', 'updatedAt'
+            ])) ||
+          // الراكب يحدّث نطاق البحث فقط ما دامت الرحلة معلقة.
+          (resource.data.passengerId == request.auth.uid
+            && resource.data.status == 'pending'
+            && request.resource.data.status == 'pending'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'currentRadius', 'updatedAt'
+            ])) ||
+          // إلغاء الراكب قبل بدء الرحلة فقط.
+          (resource.data.passengerId == request.auth.uid
+            && resource.data.status in ['pending', 'accepted', 'arrivedAtPickup']
+            && request.resource.data.status == 'cancelled'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'status', 'cancellationReason', 'cancelledByPassengerAt', 'updatedAt'
+            ])) ||
+          // التقييم بعد انتهاء الرحلة فقط، من صاحب العلاقة.
+          (resource.data.passengerId == request.auth.uid
+            && resource.data.status in ['completed', 'cancelled', 'cancelledByDriver']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'passengerRating', 'passengerNote', 'passengerRatedAt', 'updatedAt'
+            ])) ||
+          (resource.data.driverId == request.auth.uid
+            && resource.data.status in ['completed', 'cancelled', 'cancelledByDriver']
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'driverRating', 'driverNote', 'driverRatedAt', 'updatedAt'
+            ])) ||
+          isAdmin()
+        );
+      
+      // الحذف: ممنوع للمستخدمين العاديين، ومسموح للمسؤول فقط
+      allow delete: if isAdmin();
+      
+      // رسائل المحادثة داخل الرحلات: مسموحة فقط لطرفي الرحلة والمسؤول
+      match /messages/{messageId} {
+        allow read: if isTripParticipant(get(/databases/$(database)/documents/trips/$(tripId)).data) || isAdmin();
+        allow create: if isTripParticipant(get(/databases/$(database)/documents/trips/$(tripId)).data)
+          && request.resource.data.senderId == request.auth.uid;
+        allow update: if isTripParticipant(get(/databases/$(database)/documents/trips/$(tripId)).data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+        allow delete: if false;
+      }
+    }
+    
+    // مجموعة خارجية تاريخية: الكتابة والقراءة التشغيلية عبر Admin SDK فقط.
+    match /external_trips/{tripId} {
+      allow read, write: if isAdmin();
+    }
+    
+    // ============================================================
+    // 3. مجموعة الإعلانات (ads)
+    // ============================================================
+    match /ads/{adId} {
+      allow read: if isAuthenticated();
+      
+      // الكتابة والحذف: ممنوع - فقط Admin من لوحة التحكم
+      allow create, update, delete: if false;
+    }
+    
+    // ============================================================
+    // 4. مجموعة الإشعارات (notifications)
+    // ============================================================
+    match /notifications/{notificationId} {
+      // الإشعار العام أو الموجّه لمالك الوثيقة فقط.
+      allow read: if isAuthenticated() && (
+        resource.data.audience == 'all' ||
+        (resource.data.audience == 'customer' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'customer') ||
+        (resource.data.audience == 'driver' && isApprovedDriver()) ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.targetUserId == request.auth.uid ||
+        isAdmin()
+      );
+      
+      // التحديث: السماح للمستخدم فقط بتحديث حقل readBy لإضافة المعرف الخاص به (arrayUnion)
+      allow update: if isAuthenticated()
+        // 1. التأكد أن التحديث فقط على حقل readBy
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy'])
+        // 2. إذا كان الحقل موجوداً مسبقاً، يجب الحفاظ على القيم القديمة
+        && (!('readBy' in resource.data) || request.resource.data.readBy.hasAll(resource.data.readBy))
+        // 3. التأكد من إضافة معرف المستخدم الحالي
+        && request.resource.data.readBy.hasAll([request.auth.uid])
+        // 4. لا يحدّث القراءة إلا مستلم الإشعار.
+        && (resource.data.audience == 'all' ||
+          (resource.data.audience == 'customer' &&
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'customer') ||
+          (resource.data.audience == 'driver' && isApprovedDriver()) ||
+          resource.data.userId == request.auth.uid ||
+          resource.data.targetUserId == request.auth.uid ||
+          isAdmin());
+        
+      // الإنشاء والحذف: ممنوع - فقط Admin أو Cloud Functions
+      allow create, delete: if false;
+    }
+
+    
+    // ============================================================
+    // 5. مجموعة الاشتراكات (subscriptions)
+    // ============================================================
+    match /subscriptions/{subscriptionId} {
+      // القراءة: السائق يقرأ اشتراكاته فقط
+      allow read: if isAuthenticated()
+        && resource.data.driverId == request.auth.uid;
+      
+      // الكتابة والحذف: ممنوع - فقط Admin أو Cloud Functions
+      allow create, update, delete: if false;
+    }
+    
+    // ============================================================
+    // 7. مجموعة الإعدادات (settings)
+    // ============================================================
+    // الإعدادات العامة (التسعير، المدن، الإصدار) للقراءة فقط
+    match /settings/{settingId} {
+      allow read: if settingId != 'financial';
+      allow write: if isAdmin();
+    }
+    
+    // الإعدادات المالية الحساسة (المفاتيح البنكية لـ Stripe، أسرار الويب هوك) - محصورة بالإدارة فقط
+    match /settings/financial {
+      allow read, write: if isAdmin();
+    }
+    
+    // ============================================================
+    // 9. مجموعة وجهات النقل الخارجي (driverExternalRoutes)
+    // ============================================================
+    match /driverExternalRoutes/{driverId} {
+      // القراءة: أي مستخدم مسجل (الركاب يحتاجون قراءة بيانات السواق)
+      allow read: if isAuthenticated();
+      
+      // الإنشاء والتحديث: السائق المعتمد يكتب وثيقته الخاصة فقط
+      allow create, update: if isOwner(driverId) && isApprovedDriver();
+      
+      // الحذف: ممنوع
+      allow delete: if false;
+    }
+    
+    // ============================================================
+    // 10. مجموعة الكوبونات والهدايا (coupons & gifts)
+    // ============================================================
+    match /coupons/{couponId} {
+      // لا تُسرّب أكواد أو قائمة مستلمي الهدايا الخاصة.
+      allow read: if isAuthenticated() && (isCouponRecipient(resource.data) || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /gifts/{giftId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /coupon_usages/{usageId} {
+      // القراءة: الإدارة فقط
+      allow read: if isAdmin();
+      // سجل الاستهلاك يكتبه محرك التسوية الذري فقط.
+      allow write: if false;
+    }
+    
+    // ============================================================
+    // 13. المحافظ الرقمية وسجل المعاملات (wallets & transactions)
+    // ============================================================
+    // مجموعة محافظ المستخدمين والسائقين (wallets) - حماية مصرفية كاملة
+    match /wallets/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow write: if isAdmin(); // التعديل حصراً للخادم الموثوق Firebase Admin SDK والمسؤول
+      
+      // المعاملات داخل وثيقة المحفظة الفرعية
+      match /transactions/{txId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow write: if isAdmin();
+      }
+    }
+
+    // سجل المعاملات العام (wallet_transactions)
+    match /wallet_transactions/{txId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || 
+        resource.data.driverId == request.auth.uid || 
+        isAdmin()
+      );
+      allow write: if isAdmin();
+    }
+
+    // طلبات سحب أرباح السائقين (payout_requests)
+    match /payout_requests/{requestId} {
+      allow read: if isAuthenticated() && (
+        resource.data.driverId == request.auth.uid || 
+        isAdmin()
+      );
+      allow write: if isAdmin();
+    }
+
+    // ============================================================
+    // 8. المدير - صلاحيات كاملة على كل شيء
+    // ============================================================
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+  }
+}
