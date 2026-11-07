@@ -158,3 +158,40 @@ workflows:
           fi
     artifacts:
       - screenshots/*.png
+
+  taxicom-user-ios:
+    name: Taxicom User - iOS TestFlight
+    max_build_duration: 120
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Banuvra-iOS-Package
+    environment:
+      flutter: stable
+      xcode: latest
+      ios_signing:
+        provisioning_profiles:
+          - Taxicom-User-AppStore
+    scripts:
+      - name: Clean and get Flutter packages
+        script: |
+          flutter clean
+          rm -rf ios/Pods ios/.symlinks ios/Flutter/ephemeral
+          flutter pub get
+      - name: Install iOS CocoaPods
+        script: |
+          cd ios
+          pod install --clean-install
+      - name: Prepare Flutter iOS build
+        script: flutter build ios --release --no-codesign
+      - name: Apply iOS code signing
+        script: xcode-project use-profiles
+      - name: Build signed iOS IPA
+        script: xcode-project build-ipa --workspace "$CM_BUILD_DIR/ios/Runner.xcworkspace" --scheme "Runner"
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        submit_to_app_store: false
