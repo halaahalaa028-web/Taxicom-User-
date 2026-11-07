@@ -46,7 +46,9 @@
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>يحتاج التطبيق إلى معرفة موقعك لعرضه على الخريطة وتحديد موقع الانطلاق.</string>
+	<string>يستخدم تطبيق Taxicom User موقعك لتحديد نقطة الانطلاق وعرض موقعك على الخريطة أثناء استخدام التطبيق.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>يحتاج تطبيق Taxicom User إلى موقعك أثناء الرحلة لمشاركة موقعك مع السائق ومتابعة الرحلة حتى عند انتقال التطبيق إلى الخلفية.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>يحتاج التطبيق إلى الوصول إلى مكتبة الصور لاختيار صورة الملف الشخصي.</string>
 	<key>NSCameraUsageDescription</key>
