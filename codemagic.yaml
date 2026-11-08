@@ -170,7 +170,7 @@ workflows:
       xcode: latest
       ios_signing:
         provisioning_profiles:
-          - Taxicom-User-AppStore
+          - Taxicom User New
     scripts:
       - name: Clean and get Flutter packages
         script: |
